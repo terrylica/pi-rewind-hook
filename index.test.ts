@@ -7,13 +7,15 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+
 import rewindExtension from "./index.ts";
 
 const execFileAsync = promisify(execFile);
 const STORE_REF = "refs/pi-rewind/store";
 
 type RewindEntry = Record<string, unknown>;
-type EventHandler = (event: any, ctx: any) => Promise<any> | any;
+type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown;
 
 class SessionManagerStub {
   private readonly header: { type: "session"; version: number; id: string; timestamp: string; cwd: string; parentSession?: string };
@@ -97,11 +99,14 @@ async function runGit(repoRoot: string, args: string[]): Promise<{ stdout: strin
   try {
     const { stdout, stderr } = await execFileAsync("git", args, { cwd: repoRoot });
     return { stdout, stderr, code: 0 };
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const execError = error && typeof error === "object"
+      ? error as Partial<{ stdout: string; stderr: string; message: string; code: number }>
+      : undefined;
     return {
-      stdout: error.stdout ?? "",
-      stderr: error.stderr ?? error.message ?? "",
-      code: error.code ?? 1,
+      stdout: execError?.stdout ?? "",
+      stderr: execError?.stderr ?? execError?.message ?? "",
+      code: execError?.code ?? 1,
     };
   }
 }
@@ -161,7 +166,7 @@ async function createHarness(options: {
   await runGitChecked(repoRoot, ["config", "user.email", "rewind@example.com"]);
 
   const handlers = new Map<string, EventHandler>();
-  const eventHandlers = new Map<string, (data: any) => void>();
+  const eventHandlers = new Map<string, (data: unknown) => void>();
   const execCalls: string[][] = [];
   const notifications: Array<{ message: string; level: string }> = [];
   const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
@@ -200,15 +205,15 @@ async function createHarness(options: {
       handlers.set(eventName, handler);
     },
     events: {
-      on: (eventName: string, handler: (data: any) => void) => {
+      on: (eventName: string, handler: (data: unknown) => void) => {
         eventHandlers.set(eventName, handler);
       },
     },
-  } as any;
+  } satisfies Pick<ExtensionAPI, "exec" | "appendEntry" | "on" | "events">;
 
-  rewindExtension(api);
+  rewindExtension(api as ExtensionAPI);
 
-  function createContext(sessionManager: SessionManagerStub, hasUI = true): any {
+  function createContext(sessionManager: SessionManagerStub, hasUI = true) {
     return {
       cwd: repoRoot,
       hasUI,
@@ -259,7 +264,7 @@ async function createHarness(options: {
         entries: options.entries,
       });
     },
-    async invoke(eventName: string, event: any, sessionManager = activeSession, hasUI = true) {
+    async invoke(eventName: string, event: unknown, sessionManager = activeSession, hasUI = true) {
       const handler = handlers.get(eventName);
       assert.ok(handler, `missing handler for ${eventName}`);
       activeSession = sessionManager;
@@ -433,6 +438,76 @@ test("session_before_tree gracefully cancels when restore fails", async () => {
   }
 });
 
+test("session_before_tree auto-keeps current files during boomerang collapse", async () => {
+  const harness = await createHarness({
+    settings: { rewind: { silentCheckpoints: true } },
+  });
+
+  try {
+    await harness.writeRepoFile("notes.txt", "current state\n");
+
+    harness.currentSession.replaceEntries([
+      {
+        type: "message",
+        id: "user-1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "Tree target" }] },
+      },
+    ]);
+
+    await harness.invoke("session_start", {});
+    (globalThis as typeof globalThis & { __boomerangCollapseInProgress?: boolean }).__boomerangCollapseInProgress = true;
+
+    const result = await harness.invoke("session_before_tree", { preparation: { targetId: "user-1" } });
+    assert.equal(result, undefined);
+    assert.equal(harness.selectCalls.length, 0);
+
+    await harness.invoke("session_tree", { summaryEntry: { id: "summary-1" } });
+
+    const rewindOps = harness.currentSession.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "rewind-op");
+    assert.equal(rewindOps.length, 1);
+  } finally {
+    delete (globalThis as typeof globalThis & { __boomerangCollapseInProgress?: boolean }).__boomerangCollapseInProgress;
+    await harness.cleanup();
+  }
+});
+
+test("session_before_tree auto-keeps current files during headless boomerang collapse", async () => {
+  const harness = await createHarness({
+    settings: { rewind: { silentCheckpoints: true } },
+  });
+
+  try {
+    await harness.writeRepoFile("notes.txt", "current state\n");
+
+    harness.currentSession.replaceEntries([
+      {
+        type: "message",
+        id: "user-1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "Tree target" }] },
+      },
+    ]);
+
+    await harness.invoke("session_start", {});
+    (globalThis as typeof globalThis & { __boomerangCollapseInProgress?: boolean }).__boomerangCollapseInProgress = true;
+
+    const result = await harness.invoke("session_before_tree", { preparation: { targetId: "user-1" } }, harness.currentSession, false);
+    assert.equal(result, undefined);
+    assert.equal(harness.selectCalls.length, 0);
+
+    await harness.invoke("session_tree", { summaryEntry: { id: "summary-1" } }, harness.currentSession, false);
+
+    const rewindOps = harness.currentSession.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "rewind-op");
+    assert.equal(rewindOps.length, 1);
+  } finally {
+    delete (globalThis as typeof globalThis & { __boomerangCollapseInProgress?: boolean }).__boomerangCollapseInProgress;
+    await harness.cleanup();
+  }
+});
+
 test("first mutating turn creates a reachable store ref even when retention is omitted", async () => {
   const harness = await createHarness({
     settings: { rewind: { silentCheckpoints: true } },
@@ -600,4 +675,3 @@ test("retention rewrites the keepalive ref when a live snapshot exists", async (
     await harness.cleanup();
   }
 });
-

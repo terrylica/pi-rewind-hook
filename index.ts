@@ -1,10 +1,3 @@
-/**
- * Rewind Extension - session-ledger based exact file restoration for pi branching
- *
- * Rewind v2 stores exact rewind metadata in hidden session custom entries and keeps
- * snapshot commits reachable through a single repo-local store ref.
- */
-
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { exec as execCb } from "child_process";
 import { existsSync, readFileSync, realpathSync } from "fs";
@@ -783,13 +776,18 @@ export default function rewindExtension(pi: ExtensionAPI) {
       const lines = content.split("\n").filter(Boolean);
 
       for (const line of lines) {
-        let entry: any;
+        let entry: SessionLikeGenericEntry | null = null;
         try {
-          entry = JSON.parse(line);
+          const parsed = JSON.parse(line);
+          if (parsed && typeof parsed === "object") {
+            entry = parsed as SessionLikeGenericEntry;
+          }
         } catch {
           // Ignore malformed JSONL lines; retention discovery is best-effort.
           continue;
         }
+
+        if (!entry) continue;
 
         if (entry?.type === "session") {
           ledger.sessionId = entry.id;
@@ -1115,9 +1113,10 @@ export default function rewindExtension(pi: ExtensionAPI) {
     });
   }
 
-  pi.events.on("rewind:fork-preference", (data: any) => {
-    if (data?.mode !== "conversation-only") return;
-    if (typeof data?.source !== "string") return;
+  pi.events.on("rewind:fork-preference", (data) => {
+    if (!data || typeof data !== "object") return;
+    if (!("mode" in data) || data.mode !== "conversation-only") return;
+    if (!("source" in data) || typeof data.source !== "string") return;
     if (!FORK_PREFERENCE_SOURCE_ALLOWLIST.has(data.source)) return;
     forceConversationOnlyOnNextFork = true;
     forceConversationOnlySource = data.source;
@@ -1342,9 +1341,16 @@ export default function rewindExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_before_tree", async (event, ctx) => {
-    if (!isGitRepo || !ctx.hasUI) return;
+    if (!isGitRepo) return;
 
     try {
+      if ((globalThis as typeof globalThis & { __boomerangCollapseInProgress?: boolean }).__boomerangCollapseInProgress === true) {
+        pendingTreeState = { currentCommitSha: await ensureSnapshotForCurrentWorktree() };
+        return;
+      }
+
+      if (!ctx.hasUI) return;
+
       const targetEntry = ctx.sessionManager.getEntry(event.preparation.targetId) as SessionLikeEntry | undefined;
       const targetCommitSha = isRestorableTreeEntry(targetEntry)
         ? await resolveEntrySnapshotWithLineage(event.preparation.targetId, currentSessionFile)

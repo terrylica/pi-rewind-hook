@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-04-16
+
+### Fixed
+- `session_before_tree` now auto-keeps current files during [pi-boomerang](https://github.com/nicobailon/pi-boomerang) collapses instead of prompting with restore options.
+- Headless boomerang-triggered tree collapses now preserve rewind metadata instead of skipping the keep-current-files snapshot path.
+
 ## [1.8.2] - 2026-04-05
 
 ### Changed
