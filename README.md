@@ -29,6 +29,18 @@ This will:
 4. Remove legacy hooks/explicit rewind extension entries from `settings.json` if present
 5. Clean up old `hooks/rewind` directory (if present)
 
+## Works with pi-custom-compaction
+
+Rewind works seamlessly with [`pi-custom-compaction`](https://github.com/nicobailon/pi-custom-compaction). When `pi-custom-compaction` writes visible background-summary markers, it can ask Rewind to bind an exact file checkpoint to that marker’s own session-tree node. That means `/tree` can offer the normal `Restore files to that point` option directly on the custom compaction marker instead of falling back to a nearby parent node.
+
+Install the companion extension with:
+
+```bash
+pi install npm:pi-custom-compaction
+```
+
+This is optional. Pi’s default compaction and Rewind’s native compaction checkpoints continue to work without `pi-custom-compaction`.
+
 ## Configuration
 
 Optionally add settings to `~/.pi/agent/settings.json`.  For example:

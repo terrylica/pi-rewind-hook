@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.4] - 2026-04-25
+
+### Added
+- Added `pi-custom-compaction` compatibility: custom message nodes can now receive exact Rewind checkpoints via the `rewind:checkpoint-entry` extension event.
+
+### Documentation
+- Documented seamless `pi-custom-compaction` compatibility and the `pi install npm:pi-custom-compaction` install command.
+
 ## [1.8.3] - 2026-04-16
 
 ### Fixed

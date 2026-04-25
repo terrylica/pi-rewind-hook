@@ -438,6 +438,81 @@ test("session_before_tree gracefully cancels when restore fails", async () => {
   }
 });
 
+test("session_before_tree restores directly from a custom message with a checkpoint", async () => {
+  const harness = await createHarness({
+    settings: { rewind: { silentCheckpoints: true } },
+  });
+
+  try {
+    await harness.writeRepoFile("notes.txt", "target state\n");
+    const targetCommit = await harness.captureSnapshot();
+    await harness.writeRepoFile("notes.txt", "current state\n");
+
+    harness.currentSession.replaceEntries([
+      {
+        type: "custom_message",
+        id: "marker-1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        customType: "pi-custom-compaction.virtual-summary-marker",
+        content: "Older context was summarized in the background.",
+        display: true,
+      },
+      {
+        type: "custom",
+        id: "rewind-op-1",
+        parentId: "marker-1",
+        timestamp: new Date().toISOString(),
+        customType: "rewind-op",
+        data: { v: 2, snapshots: [targetCommit], bindings: [["marker-1", 0]] },
+      },
+    ]);
+
+    await harness.invoke("session_start", {});
+    harness.enqueueSelection("Restore files to that point");
+
+    const result = await harness.invoke("session_before_tree", { preparation: { targetId: "marker-1" } });
+    assert.equal(result, undefined);
+    assert.equal(harness.readRepoFile("notes.txt"), "target state\n");
+    assert.deepEqual(harness.selectCalls[0]?.options, ["Keep current files", "Restore files to that point", "Cancel navigation"]);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("rewind:checkpoint-entry binds the current tree to a custom message", async () => {
+  const harness = await createHarness({
+    settings: { rewind: { silentCheckpoints: true } },
+  });
+
+  try {
+    await harness.writeRepoFile("notes.txt", "target state\n");
+    harness.currentSession.replaceEntries([
+      {
+        type: "custom_message",
+        id: "marker-1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        customType: "pi-custom-compaction.virtual-summary-marker",
+        content: "Older context was summarized in the background.",
+        display: true,
+      },
+    ]);
+
+    await harness.invoke("session_start", {});
+    harness.eventHandlers.get("rewind:checkpoint-entry")?.({ source: "pi-custom-compaction", entryId: "marker-1" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await harness.writeRepoFile("notes.txt", "current state\n");
+
+    harness.enqueueSelection("Restore files to that point");
+    const result = await harness.invoke("session_before_tree", { preparation: { targetId: "marker-1" } });
+    assert.equal(result, undefined);
+    assert.equal(harness.readRepoFile("notes.txt"), "target state\n");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 test("session_before_tree auto-keeps current files during boomerang collapse", async () => {
   const harness = await createHarness({
     settings: { rewind: { silentCheckpoints: true } },

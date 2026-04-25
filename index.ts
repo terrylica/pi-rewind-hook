@@ -11,6 +11,7 @@ const execAsync = promisify(execCb);
 const STORE_REF = "refs/pi-rewind/store";
 const STATUS_KEY = "rewind";
 const FORK_PREFERENCE_SOURCE_ALLOWLIST = new Set(["fork-from-first"]);
+const CHECKPOINT_SOURCE_ALLOWLIST = new Set(["pi-custom-compaction"]);
 const LEGACY_ZERO_SHA = "0000000000000000000000000000000000000000";
 const RETENTION_SWEEP_THRESHOLD = 50;
 const RETENTION_VERSION = 2;
@@ -316,7 +317,7 @@ function isRestorableTreeEntry(entry: SessionLikeEntry | undefined): boolean {
   if (entry.type === "message") {
     return entry.message.role === "user" || entry.message.role === "assistant";
   }
-  return entry.type === "branch_summary" || entry.type === "compaction";
+  return entry.type === "branch_summary" || entry.type === "compaction" || entry.type === "custom_message";
 }
 
 function isAssistantMessageEntry(entry: SessionLikeEntry): entry is SessionLikeMessageEntry {
@@ -1088,7 +1089,27 @@ export default function rewindExtension(pi: ExtensionAPI) {
     updateStatus(ctx);
   }
 
+  let activeContext: ExtensionContext | undefined;
+
+  async function checkpointEntry(ctx: ExtensionContext, entryId: string) {
+    syncSessionIdentity(ctx);
+    if (!isGitRepo) return;
+    const entry = ctx.sessionManager.getEntry(entryId) as SessionLikeEntry | undefined;
+    if (!isRestorableTreeEntry(entry)) return;
+    if (entryToCommit.has(entryId)) return;
+
+    const currentCommitSha = await ensureSnapshotForCurrentWorktree();
+    appendRewindOp(ctx, {
+      v: RETENTION_VERSION,
+      snapshots: [currentCommitSha],
+      bindings: [[entryId, 0]],
+    });
+    await reconstructState(ctx);
+    updateStatus(ctx);
+  }
+
   async function initializeForSession(ctx: ExtensionContext) {
+    activeContext = ctx;
     resetState();
     syncSessionIdentity(ctx);
 
@@ -1120,6 +1141,19 @@ export default function rewindExtension(pi: ExtensionAPI) {
     if (!FORK_PREFERENCE_SOURCE_ALLOWLIST.has(data.source)) return;
     forceConversationOnlyOnNextFork = true;
     forceConversationOnlySource = data.source;
+  });
+
+  pi.events.on("rewind:checkpoint-entry", (data) => {
+    if (!data || typeof data !== "object") return;
+    if (!("source" in data) || typeof data.source !== "string") return;
+    if (!CHECKPOINT_SOURCE_ALLOWLIST.has(data.source)) return;
+    if (!("entryId" in data) || typeof data.entryId !== "string") return;
+    const ctx = activeContext;
+    if (!ctx) return;
+
+    checkpointEntry(ctx, data.entryId).catch((error) => {
+      notify(ctx, `Rewind: failed to checkpoint ${data.entryId} (${error instanceof Error ? error.message : String(error)})`, "warning");
+    });
   });
 
   pi.on("before_agent_start", async (event) => {
@@ -1392,7 +1426,7 @@ export default function rewindExtension(pi: ExtensionAPI) {
       }
 
       if (!targetCommitSha) {
-        notify(ctx, "Exact file rewind is only available for user, assistant, compaction, and summary nodes", "error");
+        notify(ctx, "Exact file rewind is only available for user, assistant, custom message, compaction, and summary nodes", "error");
         return { cancel: true };
       }
 
